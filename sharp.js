@@ -1,70 +1,74 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const sharp = require('sharp');
-const crypto = require('crypto');
 
-function calculateHash(filePath) {
-    const hash = crypto.createHash('sha512');
-    const fileBuffer = fs.readFileSync(filePath);
-    hash.update(fileBuffer);
-    return hash.digest('hex');
+
+function calculateHash(filePath, algorithm = 'sha512') {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash(algorithm);
+    const stream = fs.createReadStream(filePath);
+
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
-async function spoofImage(hexString, inputFilePath, outputFilePath) {
-    // Validate the hex string
-    if (!/^0x[0-9A-Fa-f]{2}$/.test(hexString)) {
-        throw new Error('Invalid hex string format. Use format like "0x24".');
+
+async function modifyToMatchHash(fileBuffer, targetPrefix, algorithm = 'sha512') {
+  let modifiedBuffer = Buffer.from(fileBuffer);
+  let counter = 0;
+
+  while (true) {
+    const randomByte = crypto.randomBytes(1);
+    modifiedBuffer[modifiedBuffer.length - 1] = randomByte[0]; // Modify the last byte
+    const hash = crypto.createHash(algorithm).update(modifiedBuffer).digest('hex');
+
+    if (hash.startsWith(targetPrefix)) {
+      console.log(`Match found after ${counter} attempts!`);
+      return modifiedBuffer;
     }
 
-    const targetPrefix = hexString.slice(2); // Remove '0x'
-
-    // Load the original image
-    const image = sharp(inputFilePath);
-
-    // Get the metadata of the original image
-    const metadata = await image.metadata();
-
-    // Create a modified image buffer
-    const modifiedImageBuffer = await image
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-
-    // Make a slight modification to the pixel data
-    const data = modifiedImageBuffer.data;
-    // Change the last pixel value to influence the hash
-    data[data.length - 1] = (data[data.length - 1] + parseInt(targetPrefix, 16)) % 256;
-
-    // Save the modified image
-    await sharp(modifiedImageBuffer.data, {
-        raw: {
-            width: modifiedImageBuffer.info.width,
-            height: modifiedImageBuffer.info.height,
-            channels: modifiedImageBuffer.info.channels
-        }
-    }).toFile(outputFilePath);
-
-    // Check the hash of the modified image
-    const hash = calculateHash(outputFilePath);
-    console.log(`Hash of ${outputFilePath}: ${hash}`);
-
-    // Check if the hash starts with the target prefix
-    if (!hash.startsWith(targetPrefix)) {
-        throw new Error(`Failed to create a hash starting with ${targetPrefix}`);
+    counter++;
+    if (counter % 100000 === 0) {
+      console.log(`Attempts: ${counter}`);
     }
-
-    console.log(`Successfully created ${outputFilePath} with hash starting with ${targetPrefix}`);
+  }
 }
 
-// Command line arguments
-const args = process.argv.slice(2);
-if (args.length !== 3) {
-    console.error('Usage: node spoof.js <hexstring> <original_image> <output_image>');
-    process.exit(1);
+
+async function spoof(hexPrefix, inputFile, outputFile) {
+  try {
+    // Read the input image
+    const fileBuffer = fs.readFileSync(inputFile);
+
+    // Optionally optimize image using sharp
+    const optimizedBuffer = await sharp(fileBuffer)
+      .png({ compressionLevel: 9 }) // Save as PNG with high compression
+      .toBuffer();
+
+    // Modify metadata to achieve the desired hash
+    const modifiedBuffer = await modifyToMatchHash(optimizedBuffer, hexPrefix);
+
+    // Write the altered file
+    fs.writeFileSync(outputFile, modifiedBuffer);
+
+    // Compute and log the new hash
+    const finalHash = await calculateHash(outputFile);
+    console.log(`File: ${outputFile}`);
+    console.log(`New hash: ${finalHash}`);
+  } catch (error) {
+    console.error('Error:', error.message);
+  }
 }
 
-const hexString = args[0];
-const inputFilePath = args[1];
-const outputFilePath = args[2];
+// Parse command-line arguments
+const [targetHexPrefix, inputFilePath, outputFilePath] = process.argv.slice(2);
 
-spoofImage(hexString, inputFilePath, outputFilePath)
-    .then(() => console.log('Image processing completed.'))
-    .catch(err => console.error(err.message));
+if (!targetHexPrefix || !inputFilePath || !outputFilePath) {
+  console.log('Usage: node spoof.js <hexPrefix> <inputFile> <outputFile>');
+  process.exit(1);
+}
+
+// Run the spoof function
+spoof(targetHexPrefix.replace('0x', ''), inputFilePath, outputFilePath);

@@ -37,7 +37,7 @@ async function modifyToMatchHash(fileBuffer, targetPrefix, algorithm = 'sha512')
 }
 
 
-async function spoof(hexPrefix, inputFile, outputFile) {
+async  function spoof(hexPrefix, inputFile, outputFile) {
   try {
     // Read the input image
     const fileBuffer = fs.readFileSync(inputFile);
